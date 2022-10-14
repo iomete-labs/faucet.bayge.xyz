@@ -1,7 +1,7 @@
 
 MIGRATIONS := $(shell find migrations -type f)
 
-.PHONY: build
+.PHONY: build clean
 
 all: build
 
@@ -12,3 +12,6 @@ main.db: ${MIGRATIONS}
 
 main.out: main.go database.go
 	@go build -o main.out
+
+clean:
+	rm -f main.out main.db

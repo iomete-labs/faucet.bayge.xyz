@@ -35,6 +35,9 @@ const (
 
 	// EnvDatabasePath to load the sqlite database from
 	EnvDatabasePath = "BAY_DATABASE_PATH"
+
+	// EnvListenAddress to host the webserver on
+	EnvListenAddress = "BAY_HTTP_LISTEN_ADDR"
 )
 
 const nullAddress = "0x0000000000000000000000000000000000000000"
@@ -72,6 +75,7 @@ func main() {
 		rpcUrl           = os.Getenv(EnvRpcUrl)
 		contractAddress_ = os.Getenv(EnvContractAddress)
 		databasePath     = os.Getenv(EnvDatabasePath)
+		listenAddress    = os.Getenv(EnvListenAddress)
 	)
 
 	transferAbi, err := ethAbi.JSON(strings.NewReader(transferAbiString))
@@ -249,4 +253,6 @@ func main() {
 			transactionHashHex,
 		)
 	})
+
+	http.ListenAndServe(listenAddress, nil)
 }
