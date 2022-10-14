@@ -1,0 +1,7 @@
+
+CREATE TABLE IF NOT EXISTS keys (
+	identifier INTEGER PUBLIC KEY,
+	key_secret VARCHAR NOT NULL,
+	amount INTEGER NOT NULL,
+	been_used BOOLEAN NOT NULL
+);
