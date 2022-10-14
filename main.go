@@ -8,13 +8,11 @@ import (
 	"math/big"
 	"net/http"
 	"os"
-	"strings"
 
 	_ "github.com/mattn/go-sqlite3"
 
-	ethAbi "github.com/ethereum/go-ethereum/accounts/abi"
-	ethAbiBind "github.com/ethereum/go-ethereum/accounts/abi/bind"
 	ethCommon "github.com/ethereum/go-ethereum/common"
+	ethTypes "github.com/ethereum/go-ethereum/core/types"
 	ethCrypto "github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
 )
@@ -30,9 +28,6 @@ const (
 	// EnvRpcUrl to connect to to send amounts with with Ethereum RPC
 	EnvRpcUrl = "BAY_ETH_RPC_URL"
 
-	// EnvContractAddress to use the transfer function from
-	EnvContractAddress = "BAY_ETH_CONTRACT_ADDR"
-
 	// EnvDatabasePath to load the sqlite database from
 	EnvDatabasePath = "BAY_DATABASE_PATH"
 
@@ -42,50 +37,24 @@ const (
 
 const nullAddress = "0x0000000000000000000000000000000000000000"
 
-const transferAbiString = `
-[
-  {
-    "constant": false,
-    "name": "transfer",
-    "payable": false,
-    "stateMutability": "nonpayable",
-    "type": "function",
-    "inputs": [
-      {
-        "name": "to",
-        "type": "address"
-      },
-      {
-        "name": "value",
-        "type": "uint256"
-      }
-    ]
-  }
-]
-`
+type outgoingTransaction struct {
+	reply   chan string
+	address ethCommon.Address
+	amount  *big.Int
+}
 
-func writeBadRequest(w http.ResponseWriter) {
-	fmt.Fprintf(w, "bad request")
+func writeBadRequest(w http.ResponseWriter, reason string) {
 	w.WriteHeader(http.StatusBadRequest)
+	fmt.Fprintf(w, "bad request: %v", reason)
 }
 
 func main() {
 	var (
-		privateKey_      = os.Getenv(EnvPrivateKey)
-		rpcUrl           = os.Getenv(EnvRpcUrl)
-		contractAddress_ = os.Getenv(EnvContractAddress)
-		databasePath     = os.Getenv(EnvDatabasePath)
-		listenAddress    = os.Getenv(EnvListenAddress)
+		privateKey_   = os.Getenv(EnvPrivateKey)
+		rpcUrl        = os.Getenv(EnvRpcUrl)
+		databasePath  = os.Getenv(EnvDatabasePath)
+		listenAddress = os.Getenv(EnvListenAddress)
 	)
-
-	transferAbi, err := ethAbi.JSON(strings.NewReader(transferAbiString))
-
-	if err != nil {
-		log.Fatalf(
-			"Failed to open the JSON reader for the transfer ABI! %v",
-			err,
-		)
-	}
 
 	ethereumDecimals := new(big.Int).SetInt64(EthereumDecimals)
 
@@ -97,8 +66,6 @@ func main() {
 			err,
 		)
 	}
-
-	contractAddress := ethCommon.HexToAddress(contractAddress_)
 
 	db, err := sql.Open("sqlite3", databasePath)
 
@@ -126,49 +93,105 @@ func main() {
 
 	if err != nil {
 		log.Fatalf(
-			"Failed to get the chain ID for the RPC given! %v",
+			"Failed to get the chain id using the RPC provider! %v",
 			err,
 		)
 	}
 
-	transferOpts, err := ethAbiBind.NewKeyedTransactorWithChainID(
-		privateKey,
-		chainId,
-	)
+	publicKey := privateKey.PublicKey
 
-	if err != nil {
-		log.Fatalf(
-			"Failed to create a new keyed constructor with chain id! %v",
-			err,
-		)
-	}
+	senderAddress := ethCrypto.PubkeyToAddress(publicKey)
 
-	boundContract := ethAbiBind.NewBoundContract(
-		contractAddress,
-		transferAbi,
-		client,
-		client,
-		client,
-	)
+	outgoingTransactions := make(chan outgoingTransaction, 0)
+
+	go func() {
+		for transaction := range outgoingTransactions {
+			var (
+				reply   = transaction.reply
+				address = transaction.address
+				amount  = transaction.amount
+			)
+
+			nonce, err := client.NonceAt(context.Background(), senderAddress, nil)
+
+			if err != nil {
+				log.Fatalf(
+					"Failed to get the nonce! %v",
+					err,
+				)
+			}
+
+			gasPrice, err := client.SuggestGasPrice(context.Background())
+
+			if err != nil {
+				log.Fatalf(
+					"Failed to suggest the gas price! %v",
+					err,
+				)
+			}
+
+			gasTipCap, err := client.SuggestGasTipCap(context.Background())
+
+			if err != nil {
+				log.Fatalf(
+					"Failed to suggest the gas tip cap! %v",
+					err,
+				)
+			}
+
+			txData := &ethTypes.DynamicFeeTx{
+				To:        &address,
+				Value:     amount,
+				Nonce:     nonce+1,
+				Gas:       gasPrice.Uint64(),
+				GasTipCap: gasTipCap,
+				GasFeeCap: new(big.Int).Add(gasTipCap, new(big.Int).SetInt64(1000)),
+			}
+
+			transaction := ethTypes.NewTx(txData)
+
+			signer := ethTypes.NewLondonSigner(chainId)
+
+			signed, err := ethTypes.SignTx(transaction, signer, privateKey)
+
+			if err != nil {
+				log.Fatalf(
+					"Failed to sign the faucet transaction! %v",
+					err,
+				)
+			}
+
+			err = client.SendTransaction(context.Background(), signed)
+
+			if err != nil {
+				log.Fatalf(
+					"Failed to send a transaction! %v",
+					err,
+				)
+			}
+
+			reply <- "sent"
+		}
+	}()
 
 	http.HandleFunc("/request", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "POST" {
-			writeBadRequest(w)
+			writeBadRequest(w, "not post")
 			return
 		}
 
 		if err := r.ParseForm(); err != nil {
-			writeBadRequest(w)
+			writeBadRequest(w, "couldnt parse")
 			return
 		}
 
 		var (
-			secret     = r.Form.Get("secret")
-			recipient_ = r.Form.Get("recipient")
+			secret     = r.PostForm.Get("secret")
+			recipient_ = r.PostForm.Get("recipient")
 		)
 
 		if secret == "" || recipient_ == "" {
-			writeBadRequest(w)
+			writeBadRequest(w, "secret or recipient empty")
 			return
 		}
 
@@ -192,7 +215,7 @@ func main() {
 
 		amount := new(big.Int).SetInt64(int64(amount_))
 
-		amount.Quo(amount, ethereumDecimals)
+		amount.Mul(amount, ethereumDecimals)
 
 		recipient := ethCommon.HexToAddress(recipient_)
 
@@ -201,57 +224,15 @@ func main() {
 			return
 		}
 
-		callOpts := ethAbiBind.CallOpts{
-			Pending: false,
-			Context: context.Background(),
+		reply := make(chan string)
+
+		outgoingTransactions <- outgoingTransaction{
+			reply:   reply,
+			address: recipient,
+			amount:  amount,
 		}
 
-		var results []interface{}
-
-		err = boundContract.Call(
-			&callOpts,
-			&results,
-			"transfer",
-			recipient,
-			amount,
-		)
-
-		if err != nil {
-			log.Printf(
-				"Failed to simulate the function for testing faucet sending to address %#v! %v",
-				recipient_,
-				err,
-			)
-
-			fmt.Fprintf(w, "%v", err)
-
-			w.WriteHeader(http.StatusInternalServerError)
-
-			return
-		}
-
-		transaction, err := boundContract.Transact(
-			transferOpts,
-			"transfer",
-			recipient,
-			amount,
-		)
-
-		if err != nil {
-			log.Fatalf(
-				"Failed to transfer an amount! %v",
-				err,
-			)
-		}
-
-		transactionHashHex := transaction.Hash().Hex()
-
-		fmt.Fprintf(w, transactionHashHex)
-
-		log.Printf(
-			"Transaction hash for transfer just made is %s!",
-			transactionHashHex,
-		)
+		fmt.Fprint(w, <-reply)
 	})
 
 	http.ListenAndServe(listenAddress, nil)
