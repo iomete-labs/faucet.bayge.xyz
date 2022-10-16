@@ -121,31 +121,15 @@ func main() {
 				)
 			}
 
-			gasPrice, err := client.SuggestGasPrice(context.Background())
-
-			if err != nil {
-				log.Fatalf(
-					"Failed to suggest the gas price! %v",
-					err,
-				)
-			}
-
-			gasTipCap, err := client.SuggestGasTipCap(context.Background())
-
-			if err != nil {
-				log.Fatalf(
-					"Failed to suggest the gas tip cap! %v",
-					err,
-				)
-			}
+			// hardcoding since suggesting it isn't working reliably
 
 			txData := &ethTypes.DynamicFeeTx{
 				To:        &address,
 				Value:     amount,
-				Nonce:     nonce+1,
-				Gas:       gasPrice.Uint64(),
-				GasTipCap: gasTipCap,
-				GasFeeCap: new(big.Int).Add(gasTipCap, new(big.Int).SetInt64(1000)),
+				Nonce:     nonce + 1,
+				Gas:       21000,
+				GasTipCap: new(big.Int).SetInt64(1000000000),  // maxPriorityFeePerGas
+				GasFeeCap: new(big.Int).SetInt64(14300000000), // maxFeePerGas
 			}
 
 			transaction := ethTypes.NewTx(txData)
@@ -170,7 +154,7 @@ func main() {
 				)
 			}
 
-			reply <- "sent"
+			reply <- signed.Hash().Hex()
 		}
 	}()
 
@@ -235,5 +219,5 @@ func main() {
 		fmt.Fprint(w, <-reply)
 	})
 
-	http.ListenAndServe(listenAddress, nil)
+	panic(http.ListenAndServe(listenAddress, nil))
 }
