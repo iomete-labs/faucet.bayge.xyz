@@ -11,6 +11,7 @@ import (
 
 	_ "github.com/mattn/go-sqlite3"
 
+	ethereum "github.com/ethereum/go-ethereum"
 	ethCommon "github.com/ethereum/go-ethereum/common"
 	ethTypes "github.com/ethereum/go-ethereum/core/types"
 	ethCrypto "github.com/ethereum/go-ethereum/crypto"
@@ -121,15 +122,43 @@ func main() {
 				)
 			}
 
-			// hardcoding since suggesting it isn't working reliably
+			_, err = client.CallContract(context.Background(), ethereum.CallMsg{
+				To: &address,
+			}, nil)
+
+			if err != nil {
+				log.Fatalf(
+					"Failed to call simulate with no data! %v",
+					err,
+				)
+			}
+
+			latestBlock, err := client.BlockByNumber(context.Background(), nil)
+
+			if err != nil {
+				log.Fatalf(
+					"Failed to get the latest block! %v",
+					err,
+				)
+			}
+
+			baseFee := latestBlock.BaseFee()
+
+			gasTipCap := new(big.Int).SetInt64(1_500_000_000)
+
+			maxFeePerGas := new(big.Int).SetInt64(2)
+
+			maxFeePerGas.Mul(maxFeePerGas, baseFee)
+
+			maxFeePerGas.Add(maxFeePerGas, gasTipCap)
 
 			txData := &ethTypes.DynamicFeeTx{
 				To:        &address,
 				Value:     amount,
 				Nonce:     nonce + 1,
-				Gas:       21000,
-				GasTipCap: new(big.Int).SetInt64(1000000000),  // maxPriorityFeePerGas
-				GasFeeCap: new(big.Int).SetInt64(14300000000), // maxFeePerGas
+				Gas:       21_000,
+				GasTipCap: gasTipCap,  // maxPriorityFeePerGas
+				GasFeeCap: maxFeePerGas, // maxFeePerGas
 			}
 
 			transaction := ethTypes.NewTx(txData)
@@ -216,7 +245,7 @@ func main() {
 			amount:  amount,
 		}
 
-		fmt.Fprint(w, <-reply)
+		fmt.Fprintln(w, <-reply)
 	})
 
 	panic(http.ListenAndServe(listenAddress, nil))
